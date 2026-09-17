@@ -17,6 +17,87 @@
 #define WM_AUTOMATION_START				(WM_APP+101)
 UINT s_uTaskbarRestart = -1;
 
+namespace
+{
+	enum TaskbarMenuCommand
+	{
+		TASKBAR_MENU_OPEN = 1,
+		TASKBAR_MENU_STOP_PROXY,
+		TASKBAR_MENU_EXIT,
+		TASKBAR_MENU_PROFILE_FIRST = 1000
+	};
+
+	HICON CreateGrayscaleIcon(HICON sourceIcon)
+	{
+		if (!sourceIcon)
+			return NULL;
+
+		ICONINFO sourceInfo = { 0 };
+		if (!GetIconInfo(sourceIcon, &sourceInfo) || !sourceInfo.hbmColor)
+		{
+			if (sourceInfo.hbmColor)
+				DeleteObject(sourceInfo.hbmColor);
+			if (sourceInfo.hbmMask)
+				DeleteObject(sourceInfo.hbmMask);
+			return CopyIcon(sourceIcon);
+		}
+
+		BITMAP bitmap = { 0 };
+		GetObject(sourceInfo.hbmColor, sizeof(bitmap), &bitmap);
+		BITMAPINFO bitmapInfo = { 0 };
+		bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bitmapInfo.bmiHeader.biWidth = bitmap.bmWidth;
+		bitmapInfo.bmiHeader.biHeight = bitmap.bmHeight;
+		bitmapInfo.bmiHeader.biPlanes = 1;
+		bitmapInfo.bmiHeader.biBitCount = 32;
+		bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+		std::vector<DWORD> pixels(bitmap.bmWidth * bitmap.bmHeight);
+		HDC screenDc = GetDC(NULL);
+		HICON grayIcon = NULL;
+		if (screenDc && GetDIBits(screenDc, sourceInfo.hbmColor, 0,
+			bitmap.bmHeight, &pixels[0], &bitmapInfo, DIB_RGB_COLORS))
+		{
+			for (size_t index = 0; index < pixels.size(); ++index)
+			{
+				const DWORD pixel = pixels[index];
+				const BYTE blue = static_cast<BYTE>(pixel & 0xff);
+				const BYTE green = static_cast<BYTE>((pixel >> 8) & 0xff);
+				const BYTE red = static_cast<BYTE>((pixel >> 16) & 0xff);
+				const BYTE alpha = static_cast<BYTE>((pixel >> 24) & 0xff);
+				const BYTE gray = static_cast<BYTE>((red * 30 + green * 59 + blue * 11) / 100);
+				pixels[index] = (static_cast<DWORD>(alpha) << 24)
+					| (static_cast<DWORD>(gray) << 16)
+					| (static_cast<DWORD>(gray) << 8)
+					| gray;
+			}
+
+			HBITMAP grayBitmap = CreateDIBitmap(screenDc, &bitmapInfo.bmiHeader,
+				CBM_INIT, &pixels[0], &bitmapInfo, DIB_RGB_COLORS);
+			if (grayBitmap)
+			{
+				ICONINFO grayInfo = sourceInfo;
+				grayInfo.hbmColor = grayBitmap;
+				grayIcon = CreateIconIndirect(&grayInfo);
+				DeleteObject(grayBitmap);
+			}
+		}
+		if (screenDc)
+			ReleaseDC(NULL, screenDc);
+		DeleteObject(sourceInfo.hbmColor);
+		if (sourceInfo.hbmMask)
+			DeleteObject(sourceInfo.hbmMask);
+		return grayIcon ? grayIcon : CopyIcon(sourceIcon);
+	}
+
+	CString EscapeMenuText(const CString& text)
+	{
+		CString escaped(text);
+		escaped.Replace(_T("&"), _T("&&"));
+		return escaped;
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // ShellNotifyIcon
 BOOL
@@ -124,6 +205,7 @@ ShellNotifyIcon_AddInfo(
 
 CProxyLaneDlg::CProxyLaneDlg(CWnd* pParent /*=NULL*/)
 	: CModernDialog(CProxyLaneDlg::IDD, pParent)
+	, m_hInactiveIcon(NULL)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -163,6 +245,7 @@ BOOL CProxyLaneDlg::OnInitDialog()
 
 	SetIcon(m_hIcon, TRUE);			// 设置大图标
 	SetIcon(m_hIcon, FALSE);		// 设置小图标
+	m_hInactiveIcon = CreateGrayscaleIcon(GetIcon(FALSE));
 
 	// TODO: 在此添加额外的初始化代码
 
@@ -297,7 +380,7 @@ BOOL CProxyLaneDlg::AddTaskbarIcons()
 		m_hWnd,
 		IDD,
 		WM_SHELLICON_NOTIFY,
-		GetIcon(FALSE),
+		GetTaskbarIcon(),
 		tooltip);
 }
 
@@ -309,25 +392,35 @@ CString CProxyLaneDlg::BuildTaskbarTooltip() const
 		tooltip += Localization::Format(_T("dialog.running_suffix"),
 			static_cast<LPCTSTR>(m_MainTab.GetRunningProfileName()));
 	}
+	else
+	{
+		tooltip += Localization::Get(_T("dialog.stopped_suffix"));
+	}
 	return tooltip;
 }
 
-void CProxyLaneDlg::UpdateTaskbarTooltip()
+HICON CProxyLaneDlg::GetTaskbarIcon() const
+{
+	return m_MainTab.IsProxyRunning() || !m_hInactiveIcon
+		? GetIcon(FALSE) : m_hInactiveIcon;
+}
+
+void CProxyLaneDlg::UpdateTaskbarIcon()
 {
 	const CString tooltip = BuildTaskbarTooltip();
 	ShellNotifyIcon_Modify(
 		m_hWnd,
 		IDD,
 		WM_SHELLICON_NOTIFY,
-		GetIcon(FALSE),
+		GetTaskbarIcon(),
 		tooltip,
-		NIF_TIP);
+		NIF_ICON | NIF_TIP);
 }
 
 LRESULT CProxyLaneDlg::OnProxyStatusChanged(WPARAM, LPARAM)
 {
 	RefreshProfileCommandServer();
-	UpdateTaskbarTooltip();
+	UpdateTaskbarIcon();
 	return 0;
 }
 
@@ -424,12 +517,15 @@ void CProxyLaneDlg::OnDestroy()
 {
 	theApp.DeactivateProfileCommandServer();
 	theApp.ReleaseAutomationLaunchGate();
-	CDialog::OnDestroy();
-
-	// TODO: 在此处添加消息处理程序代码
 	ShellNotifyIcon_Delete(
 		m_hWnd,
 		IDD_PROXYLANE_DIALOG);
+	if (m_hInactiveIcon)
+	{
+		DestroyIcon(m_hInactiveIcon);
+		m_hInactiveIcon = NULL;
+	}
+	CDialog::OnDestroy();
 }
 
 
@@ -456,12 +552,126 @@ CProxyLaneDlg::OnShellIconNotify(
 		case WM_LBUTTONDBLCLK:
 			ShowAndActivate();
 			break;
+		case WM_RBUTTONUP:
+			ShowTaskbarMenu();
+			break;
 		default:
 			break;
 		}
 	}
 
 	return 1;
+}
+
+void CProxyLaneDlg::ShowTaskbarMenu()
+{
+	CMenu menu;
+	if (!menu.CreatePopupMenu())
+		return;
+
+	menu.AppendMenu(MF_STRING, TASKBAR_MENU_OPEN,
+		Localization::Get(_T("tray.open")));
+	menu.AppendMenu(MF_SEPARATOR);
+
+	CPage1* page1 = m_MainTab.GetPage1();
+	std::vector<CString> profiles;
+	if (m_MainTab.IsProxyRunning())
+	{
+		CString runningText = Localization::Format(_T("tray.running_profile"),
+			static_cast<LPCTSTR>(m_MainTab.GetRunningProfileName()));
+		menu.AppendMenu(MF_STRING | MF_DISABLED | MF_GRAYED, 0, runningText);
+		menu.AppendMenu(MF_STRING, TASKBAR_MENU_STOP_PROXY,
+			Localization::Get(_T("action.stop_proxy")));
+	}
+	else
+	{
+		CMenu profileMenu;
+		if (profileMenu.CreatePopupMenu())
+		{
+			if (page1)
+				page1->GetSavedProfileNames(profiles);
+
+			if (profiles.empty())
+			{
+				profileMenu.AppendMenu(MF_STRING | MF_DISABLED | MF_GRAYED, 0,
+					Localization::Get(_T("tray.no_profiles")));
+			}
+			else
+			{
+				for (size_t index = 0; index < profiles.size(); ++index)
+				{
+					profileMenu.AppendMenu(MF_STRING,
+						TASKBAR_MENU_PROFILE_FIRST + static_cast<UINT>(index),
+						EscapeMenuText(profiles[index]));
+				}
+			}
+
+			menu.AppendMenu(MF_POPUP,
+				reinterpret_cast<UINT_PTR>(profileMenu.Detach()),
+				Localization::Get(_T("action.start_proxy")));
+		}
+	}
+
+	menu.AppendMenu(MF_SEPARATOR);
+	menu.AppendMenu(MF_STRING, TASKBAR_MENU_EXIT,
+		Localization::Get(_T("tray.exit")));
+
+	CPoint cursor;
+	GetCursorPos(&cursor);
+	SetForegroundWindow();
+	const UINT command = TrackPopupMenu(menu.GetSafeHmenu(),
+		TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+		cursor.x, cursor.y, 0, m_hWnd, NULL);
+	PostMessage(WM_NULL);
+
+	if (command == TASKBAR_MENU_OPEN)
+	{
+		ShowAndActivate();
+	}
+	else if (command == TASKBAR_MENU_STOP_PROXY)
+	{
+		if (page1 && !page1->StopProxy())
+			ShowAndActivate();
+	}
+	else if (command == TASKBAR_MENU_EXIT)
+	{
+		if (page1 && page1->HasUnsavedProfileChanges())
+			ShowAndActivate();
+		PostMessage(WM_CLOSE);
+	}
+	else if (command >= TASKBAR_MENU_PROFILE_FIRST &&
+		command < TASKBAR_MENU_PROFILE_FIRST + profiles.size())
+	{
+		StartProxyFromTaskbarProfile(
+			profiles[command - TASKBAR_MENU_PROFILE_FIRST]);
+	}
+}
+
+void CProxyLaneDlg::StartProxyFromTaskbarProfile(LPCTSTR profileName)
+{
+	CPage1* page1 = m_MainTab.GetPage1();
+	if (!page1)
+		return;
+
+	if (page1->HasUnsavedProfileChanges())
+	{
+		ShowAndActivate();
+		if (!page1->ConfirmDiscardUnsavedChanges())
+			return;
+	}
+
+	if (!page1->LoadProfileByName(profileName, TRUE))
+	{
+		ShowAndActivate();
+		MessageBox(
+			Localization::Format(_T("tray.profile_load_failed"), profileName),
+			Localization::Get(_T("proxy.start_failed_title")),
+			MB_OK | MB_ICONERROR);
+		return;
+	}
+
+	if (!page1->StartProxy(TRUE))
+		ShowAndActivate();
 }
 
 void CProxyLaneDlg::ShowAndActivate()

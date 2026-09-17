@@ -24,13 +24,17 @@ public:
 // 实现
 protected:
 	HICON m_hIcon;
+	HICON m_hInactiveIcon;
 
 	CMainTab m_MainTab;
 
 
 	BOOL AddTaskbarIcons();
 	CString BuildTaskbarTooltip() const;
-	void UpdateTaskbarTooltip();
+	HICON GetTaskbarIcon() const;
+	void UpdateTaskbarIcon();
+	void ShowTaskbarMenu();
+	void StartProxyFromTaskbarProfile(LPCTSTR profileName);
 	void ShowAndActivate();
 	void FailAutomation(int exitCode);
 	BOOL RefreshProfileCommandServer();

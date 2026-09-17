@@ -10,6 +10,7 @@
 #include "HookWinsock.h"
 #include <shlobj.h>
 #include "InjectDll.h"
+#include "DeferredMitigationPolicy.h"
 
 CGlobalProxy *g_pPMGlobalProxy = NULL;
 CHookWinsock *g_pPMHookWs = NULL;
@@ -173,7 +174,11 @@ BOOL WINAPI gp_HookWinsock(LPCSTR lpszPRCPipeName)
 		return FALSE;
 
 	g_pPMHookWs->SetPRCPipeName(lpszPRCPipeName);
-	return g_pPMHookWs->EnableHook();
+	const BOOL hookResult = g_pPMHookWs->EnableHook();
+
+	DeferredMitigationPolicy::RestoreCigPolicy();
+
+	return hookResult;
 }
 
 

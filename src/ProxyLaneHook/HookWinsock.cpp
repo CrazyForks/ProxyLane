@@ -1,4 +1,4 @@
-﻿/************************************************************************/
+/************************************************************************/
 /*                                                                      */
 /*                                                                      */
 /************************************************************************/
@@ -13,6 +13,9 @@
 #include "UdpAssociationPolicy.h"
 #include "Ipv6BlockPolicy.h"
 #include "DnsAddressFamilyPolicy.h"
+#include "DnsNamePolicy.h"
+#include "DnsQueryPolicy.h"
+#include "DeferredMitigationPolicy.h"
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -305,6 +308,7 @@ CHookWinsock::CHookWinsock(void)
 	ZeroMemory(m_HookedInfo, sizeof(m_HookedInfo));
 	ZeroMemory(&m_psi, sizeof(m_psi));
 	ZeroMemory(m_mem4bakcode, sizeof(m_mem4bakcode));
+	ZeroMemory(m_LocalDnsHostName, sizeof(m_LocalDnsHostName));
 	ZeroMemory(m_ChildGuardName, sizeof(m_ChildGuardName));
 	m_ChildGuardInstalled = FALSE;
 
@@ -424,6 +428,15 @@ BOOL CHookWinsock::EnableHook()
 	PRCINFO startupInfo;
 	if (!PRCPipeClient.GetPRCStartupInfo(&startupInfo))
 		return FALSE;
+
+	DWORD localDnsHostNameLength = _countof(m_LocalDnsHostName);
+	if (!GetComputerNameExA(ComputerNameDnsHostname, m_LocalDnsHostName,
+		&localDnsHostNameLength))
+	{
+		m_LocalDnsHostName[0] = '\0';
+	}
+	m_LocalDnsHostName[_countof(m_LocalDnsHostName) - 1] = '\0';
+
 	if (m_psi.bHookCreateProcess && startupInfo.childGuardName[0])
 	{
 		wcsncpy(m_ChildGuardName, startupInfo.childGuardName,
@@ -557,6 +570,13 @@ BOOL CHookWinsock::HookAPI(eHOOKMODUDLE ehm, eHOOKFUN ehf, char *exportfunc, LPV
 
 BOOL CHookWinsock::IsHostNameReserved(const char *name)
 {
+	// localhost must retain the operating system's loopback result.  A dummy
+	// address here can later be used by bind/listen and make the local service
+	// unreachable to clients that correctly resolve localhost to 127.0.0.1.
+	if (DnsNamePolicy::IsLocalhost(name) ||
+		DnsNamePolicy::EqualsDnsName(name, m_LocalDnsHostName))
+		return TRUE;
+
 	IN_ADDR address4;
 	IN6_ADDR address6;
 	if (name && (ProxyInetPtonA(AF_INET, name, &address4) == 1 ||
@@ -646,7 +666,7 @@ int WSAAPI CHookWinsock::inhook_getaddrinfo(IN const char FAR * nodename, IN con
 	if (!nodename)
 		return CallTrampoline(getaddrinfo)(nodename, servname, hints, res);
 
-	if (HackDNS(nodename))
+	if (!DnsQueryPolicy::IsPassiveLookup(hints) && HackDNS(nodename))
 	{
 		ATLTRACE("inhook_getaddrinfo %s\r\n", nodename);
 		const int requestedFamily = hints ? hints->ai_family : AF_UNSPEC;
@@ -752,6 +772,7 @@ struct timeval *timeout,
 		iLen = WideCharToMultiByte(0, 0, pName, -1, nodename, sizeof(nodename), 0, 0);
 
 	if (iLen > 0
+		&& !DnsQueryPolicy::IsPassiveLookup(hints)
 		&& HackDNS(nodename)
 		)
 	{
@@ -864,6 +885,7 @@ int WSAAPI CHookWinsock::inhook_GetAddrInfoW(
 		iLen = WideCharToMultiByte(0, 0, pNodeName, -1, nodename, sizeof(nodename), 0, 0);
 
 	if (iLen > 0
+		&& !DnsQueryPolicy::IsPassiveLookup(pHints)
 		&& HackDNS(nodename)
 		)
 	{
@@ -2054,8 +2076,10 @@ static BOOL BuildWideChildEnvironment(
 	LPVOID suppliedEnvironment,
 	BOOL addMarker,
 	LPCWSTR variableName,
+	DWORD deferredSignatureFlags,
 	std::vector<BYTE>& output)
 {
+	const BOOL hasVariableName = variableName && variableName[0];
 	LPWCH inherited = NULL;
 	const WCHAR *source = static_cast<const WCHAR *>(suppliedEnvironment);
 	if (!source)
@@ -2073,13 +2097,20 @@ static BOOL BuildWideChildEnvironment(
 	for (std::vector<std::wstring>::iterator it = entries.begin();
 		it != entries.end();)
 	{
-		if (EnvironmentEntryHasName(*it, variableName))
+		if ((hasVariableName && EnvironmentEntryHasName(*it, variableName)) ||
+			EnvironmentEntryHasName(*it, PROXYLANE_DEFERRED_CIG_ENV_W))
 			it = entries.erase(it);
 		else
 			++it;
 	}
-	if (addMarker)
+	if (addMarker && hasVariableName)
 		entries.push_back(std::wstring(variableName) + L"=1");
+	if (deferredSignatureFlags != 0)
+	{
+		WCHAR flagBuf[16] = { 0 };
+		_ultow(deferredSignatureFlags, flagBuf, 10);
+		entries.push_back(std::wstring(PROXYLANE_DEFERRED_CIG_ENV_W) + L"=" + flagBuf);
+	}
 	SerializeEnvironmentEntries<WCHAR, std::wstring, WideEnvironmentLess>(
 		entries, output);
 	return TRUE;
@@ -2089,14 +2120,14 @@ static BOOL BuildAnsiChildEnvironment(
 	LPVOID suppliedEnvironment,
 	BOOL addMarker,
 	LPCWSTR variableName,
+	DWORD deferredSignatureFlags,
 	std::vector<BYTE>& output)
 {
 	char ansiName[64] = "";
-	if (!WideCharToMultiByte(CP_ACP, 0, variableName, -1, ansiName,
-		_countof(ansiName), NULL, NULL))
-	{
-		return FALSE;
-	}
+	const BOOL hasVariableName = variableName && variableName[0] &&
+		WideCharToMultiByte(CP_ACP, 0, variableName, -1, ansiName,
+			_countof(ansiName), NULL, NULL);
+
 	LPCH inherited = NULL;
 	const char *source = static_cast<const char *>(suppliedEnvironment);
 	if (!source)
@@ -2121,13 +2152,20 @@ static BOOL BuildAnsiChildEnvironment(
 	for (std::vector<std::string>::iterator it = entries.begin();
 		it != entries.end();)
 	{
-		if (EnvironmentEntryHasName(*it, ansiName))
+		if ((hasVariableName && EnvironmentEntryHasName(*it, ansiName)) ||
+			EnvironmentEntryHasName(*it, PROXYLANE_DEFERRED_CIG_ENV_A))
 			it = entries.erase(it);
 		else
 			++it;
 	}
-	if (addMarker)
+	if (addMarker && hasVariableName)
 		entries.push_back(std::string(ansiName) + "=1");
+	if (deferredSignatureFlags != 0)
+	{
+		char flagBuf[16] = "";
+		_ultoa(deferredSignatureFlags, flagBuf, 10);
+		entries.push_back(std::string(PROXYLANE_DEFERRED_CIG_ENV_A) + "=" + flagBuf);
+	}
 	SerializeEnvironmentEntries<char, std::string, AnsiEnvironmentLess>(
 		entries, output);
 	return TRUE;
@@ -2138,17 +2176,18 @@ static BOOL BuildChildEnvironment(
 	DWORD creationFlags,
 	BOOL addMarker,
 	LPCWSTR variableName,
+	DWORD deferredSignatureFlags,
 	std::vector<BYTE>& output)
 {
-	if (!variableName || !variableName[0])
+	if ((!variableName || !variableName[0]) && deferredSignatureFlags == 0)
 		return FALSE;
 	if (creationFlags & CREATE_UNICODE_ENVIRONMENT)
 	{
 		return BuildWideChildEnvironment(suppliedEnvironment, addMarker,
-			variableName, output);
+			variableName, deferredSignatureFlags, output);
 	}
 	return BuildAnsiChildEnvironment(suppliedEnvironment, addMarker,
-		variableName, output);
+		variableName, deferredSignatureFlags, output);
 }
 
 class CChildResumeGuard
@@ -2190,25 +2229,38 @@ BOOL WINAPI CHookWinsock::inhook_CreateProcessInternalW(HANDLE hToken, LPCWSTR l
 		dwCreationFlags |= CREATE_SUSPENDED;
 	}
 
+	SIZE_T mitigationPolicySize = 0;
+	DWORD64* pMitigationPolicy = NULL;
+	if (originalCreationFlags & EXTENDED_STARTUPINFO_PRESENT)
+	{
+		pMitigationPolicy = DeferredMitigationPolicy::FindMitigationPolicyInStartupInfo(lpStartupInfo, &mitigationPolicySize);
+	}
+	DeferredMitigationPolicy::CScopedMitigationDeferral mitigationDeferral(pMitigationPolicy, mitigationPolicySize);
+	const DWORD deferredSignatureFlags = mitigationDeferral.GetDeferredSignatureFlags();
+	const BOOL addDeferredCig = (deferredSignatureFlags != 0);
+
 	std::vector<BYTE> childEnvironment;
 	LPVOID effectiveEnvironment = lpEnvironment;
 	// NULL normally inherits the marker automatically.  Explicit environment
 	// blocks must receive it.  Conversely, a caller-owned CREATE_SUSPENDED child
 	// must never carry ProxyLane's marker because ProxyLane does not own that
 	// suspension.
-	const BOOL mustRewriteEnvironment = m_ChildGuardInstalled &&
-		((bSuspend && lpEnvironment != NULL) || !bSuspend);
+	const BOOL mustRewriteEnvironment = (m_ChildGuardInstalled &&
+		((bSuspend && lpEnvironment != NULL) || !bSuspend)) || addDeferredCig;
 	if (mustRewriteEnvironment && BuildChildEnvironment(
 		lpEnvironment,
 		originalCreationFlags,
 		bSuspend,
 		m_ChildGuardName,
+		deferredSignatureFlags,
 		childEnvironment))
 	{
 		effectiveEnvironment = &childEnvironment[0];
 	}
 
 	BOOL bRetVal = CallTrampoline(CreateProcessInternalW)(hToken, lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, effectiveEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation, hNewToken);
+
+	mitigationDeferral.Restore();
 
 	if (bRetVal)
 	{

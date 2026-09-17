@@ -46,6 +46,9 @@
 	<ClCompile Include="InetCompatTests.cpp"><PreprocessorDefinitions>main=InetCompatTestsMain;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
 	<ClCompile Include="Ipv6BlockPolicyTests.cpp"><PreprocessorDefinitions>main=Ipv6BlockPolicyTestsMain;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
 	<ClCompile Include="DnsAddressFamilyPolicyTests.cpp"><PreprocessorDefinitions>main=DnsAddressFamilyPolicyTestsMain;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+	<ClCompile Include="DnsNamePolicyTests.cpp"><PreprocessorDefinitions>main=DnsNamePolicyTestsMain;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+	<ClCompile Include="DnsQueryPolicyTests.cpp"><PreprocessorDefinitions>main=DnsQueryPolicyTestsMain;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+	<ClCompile Include="DeferredMitigationPolicyTests.cpp"><PreprocessorDefinitions>main=DeferredMitigationPolicyTestsMain;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
     <ClCompile Include="..\src\ProxyLaneHook\Socks5UdpCodec.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -781,6 +781,7 @@ private:
 
 	CString m_szLastError;
 	CString m_szPRCPipeName;
+	CHAR m_LocalDnsHostName[256];
 	WCHAR m_ChildGuardName[64];
 	BOOL m_ChildGuardInstalled;
 	CPRCPipeClient m_RequestPipe;

@@ -7,6 +7,7 @@
 #include "ProxyController.h"
 #include "ProxyProfileStore.h"
 #include <afxmt.h>
+#include <vector>
 
 
 // CPage1 对话框
@@ -106,11 +107,13 @@ private:
 public:
 
 	BOOL GetSettings(OUT LPProxyInfo lpPI);
-	BOOL LoadProfileByName(LPCTSTR profileName);
+	BOOL LoadProfileByName(LPCTSTR profileName, BOOL rememberSelection = FALSE);
 	BOOL StartProxy(BOOL showErrors);
 	BOOL StopProxy();
 	BOOL IsProxyRunning() const;
 	BOOL ConfirmDiscardUnsavedChanges();
+	BOOL HasUnsavedProfileChanges() const { return m_profileDirty; }
+	void GetSavedProfileNames(std::vector<CString>& names);
 
 	//重载IProxySettings的成员函数////////////////////////////////////////////
 	BOOL GetProxyInfo(const LPPRCClient pPRCC, LPProxyInfo lpPI);

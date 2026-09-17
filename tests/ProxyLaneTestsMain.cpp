@@ -9,6 +9,9 @@ int ProxyTransportPolicyTestsMain();
 int InetCompatTestsMain();
 int Ipv6BlockPolicyTestsMain();
 int DnsAddressFamilyPolicyTestsMain();
+int DnsNamePolicyTestsMain();
+int DnsQueryPolicyTestsMain();
+int DeferredMitigationPolicyTestsMain();
 
 int main()
 {
@@ -29,6 +32,12 @@ int main()
 	if (Ipv6BlockPolicyTestsMain() != 0)
 		return 1;
 	if (DnsAddressFamilyPolicyTestsMain() != 0)
+		return 1;
+	if (DnsNamePolicyTestsMain() != 0)
+		return 1;
+	if (DnsQueryPolicyTestsMain() != 0)
+		return 1;
+	if (DeferredMitigationPolicyTestsMain() != 0)
 		return 1;
 	std::cout << "ProxyLane tests passed" << std::endl;
 	return 0;

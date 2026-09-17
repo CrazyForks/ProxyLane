@@ -88,6 +88,34 @@ std::wstring Hex64(ULONGLONG value) {
     return stream.str();
 }
 
+std::wstring QuoteCommandLineArgument(const std::wstring& value) {
+    std::wstring quoted = L"\"";
+    size_t slashCount = 0;
+    for (std::wstring::const_iterator it = value.begin(); it != value.end(); ++it) {
+        if (*it == L'\\') {
+            ++slashCount;
+            continue;
+        }
+        if (*it == L'\"') {
+            quoted.append(slashCount * 2 + 1, L'\\');
+            quoted.push_back(L'\"');
+            slashCount = 0;
+            continue;
+        }
+        quoted.append(slashCount, L'\\');
+        slashCount = 0;
+        quoted.push_back(*it);
+    }
+    quoted.append(slashCount * 2, L'\\');
+    quoted.push_back(L'\"');
+    return quoted;
+}
+
+std::wstring DirectoryOf(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
+}
+
 void PrintOsVersion() {
     typedef LONG(WINAPI* RtlGetVersionFn)(OSVERSIONINFOW*);
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -364,9 +392,210 @@ bool RunMultipleAttributeTest(bool dump) {
            handleMatches.size() == 1;
 }
 
+typedef DWORD(WINAPI* ProbeValueFunction)();
+
+int RunRuntimeCigChild(const wchar_t* dllAPath, const wchar_t* dllBPath) {
+    std::wcout << L"\n[test: runtime CIG after a third-party DLL is loaded]\n";
+
+    PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY initialPolicy = {};
+    if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessSignaturePolicy,
+                                    &initialPolicy, sizeof(initialPolicy))) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"initial_GetProcessMitigationPolicy=FAIL error=" << error
+                   << L" (" << ErrorText(error) << L")\n";
+        return 20;
+    }
+    const bool initiallyEnabled = initialPolicy.MicrosoftSignedOnly ||
+        initialPolicy.StoreSignedOnly || initialPolicy.MitigationOptIn;
+    std::wcout << L"initial_cig=" << (initiallyEnabled ? L"on" : L"off") << L'\n';
+    if (initiallyEnabled) {
+        std::wcerr << L"runtime_test_precondition=FAIL reason=child already has CIG\n";
+        return 21;
+    }
+
+    HMODULE moduleA = LoadLibraryW(dllAPath);
+    if (!moduleA) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"load_unsigned_a=FAIL error=" << error << L" ("
+                   << ErrorText(error) << L")\n";
+        return 22;
+    }
+    std::wcout << L"load_unsigned_a=PASS\n";
+
+    ProbeValueFunction probeA = reinterpret_cast<ProbeValueFunction>(
+        GetProcAddress(moduleA, "ProbeValue"));
+    if (!probeA || probeA() != 0xA11A0001UL) {
+        std::wcerr << L"call_unsigned_a_before_cig=FAIL\n";
+        return 23;
+    }
+    std::wcout << L"call_unsigned_a_before_cig=PASS\n";
+
+    PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY requestedPolicy = {};
+    requestedPolicy.MicrosoftSignedOnly = 1;
+    if (!SetProcessMitigationPolicy(ProcessSignaturePolicy, &requestedPolicy,
+                                    sizeof(requestedPolicy))) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"SetProcessMitigationPolicy=FAIL error=" << error << L" ("
+                   << ErrorText(error) << L")\n";
+        return 24;
+    }
+    std::wcout << L"SetProcessMitigationPolicy=PASS\n";
+
+    PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY effectivePolicy = {};
+    if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessSignaturePolicy,
+                                    &effectivePolicy, sizeof(effectivePolicy))) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"effective_GetProcessMitigationPolicy=FAIL error=" << error
+                   << L" (" << ErrorText(error) << L")\n";
+        return 25;
+    }
+    const bool effectiveCig = effectivePolicy.MicrosoftSignedOnly != 0;
+    std::wcout << L"effective_cig=" << (effectiveCig ? L"on" : L"off") << L'\n';
+    if (!effectiveCig) {
+        return 26;
+    }
+
+    HMODULE observedA = GetModuleHandleW(L"TestUnsignedA.dll");
+    std::wcout << L"unsigned_a_still_loaded=" <<
+        (observedA == moduleA ? L"PASS" : L"FAIL") << L'\n';
+    if (observedA != moduleA) {
+        return 27;
+    }
+    if (probeA() != 0xA11A0001UL) {
+        std::wcerr << L"call_unsigned_a_after_cig=FAIL\n";
+        return 28;
+    }
+    std::wcout << L"call_unsigned_a_after_cig=PASS\n";
+
+    // Loading an image rejected by CIG can raise the system's "Bad Image"
+    // critical-error dialog.  Keep this negative test non-interactive and
+    // restore the caller's thread error mode immediately afterwards.
+    DWORD previousErrorMode = 0;
+    if (!SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX,
+                            &previousErrorMode)) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"set_thread_error_mode=FAIL error=" << error << L'\n';
+        return 29;
+    }
+    SetLastError(ERROR_SUCCESS);
+    HMODULE moduleB = LoadLibraryW(dllBPath);
+    const DWORD unsignedBError = moduleB ? ERROR_SUCCESS : GetLastError();
+    const BOOL restoredErrorMode = SetThreadErrorMode(previousErrorMode, nullptr);
+    std::wcout << L"bad_image_dialog_suppression="
+               << (restoredErrorMode ? L"PASS" : L"RESTORE_FAIL") << L'\n';
+    if (!restoredErrorMode) {
+        return 30;
+    }
+    if (moduleB) {
+        std::wcerr << L"load_unsigned_b=FAIL reason=unexpectedly loaded\n";
+        FreeLibrary(moduleB);
+        return 31;
+    }
+    // Do not call FormatMessage after CIG is active: formatting can lazily load
+    // localized resource modules and would add an unrelated image-load test.
+    std::wcout << L"load_unsigned_b=BLOCKED error=" << unsignedBError
+               << L" expected_error="
+               << ERROR_INVALID_IMAGE_HASH << L'\n';
+    if (unsignedBError != ERROR_INVALID_IMAGE_HASH) {
+        std::wcout << L"load_unsigned_b_error_verdict=NONSTANDARD_BUT_BLOCKED\n";
+    } else {
+        std::wcout << L"load_unsigned_b_error_verdict=EXPECTED\n";
+    }
+
+    const wchar_t* systemCandidates[] = {
+        L"winhttp.dll", L"dbghelp.dll", L"cryptui.dll", L"propsys.dll"
+    };
+    const wchar_t* selectedSystemDll = nullptr;
+    for (size_t i = 0; i < ARRAYSIZE(systemCandidates); ++i) {
+        if (!GetModuleHandleW(systemCandidates[i])) {
+            selectedSystemDll = systemCandidates[i];
+            break;
+        }
+    }
+    if (!selectedSystemDll) {
+        std::wcerr << L"select_new_microsoft_dll=FAIL reason=all candidates already loaded\n";
+        return 32;
+    }
+
+    wchar_t systemDirectory[MAX_PATH] = {};
+    if (!GetSystemDirectoryW(systemDirectory, ARRAYSIZE(systemDirectory))) {
+        return 33;
+    }
+    std::wstring systemDllPath = std::wstring(systemDirectory) + L"\\" +
+        selectedSystemDll;
+    HMODULE systemModule = LoadLibraryW(systemDllPath.c_str());
+    if (!systemModule) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"load_microsoft_dll=FAIL name=" << selectedSystemDll
+                   << L" error=" << error << L'\n';
+        return 34;
+    }
+    std::wcout << L"load_microsoft_dll=PASS name=" << selectedSystemDll << L'\n';
+    FreeLibrary(systemModule);
+
+    std::wcout << L"runtime_cig_child_result=PASS\n";
+    return 0;
+}
+
+bool RunRuntimeCigParentTest() {
+    std::wcout << L"\n[test: launch runtime CIG child without creation CIG]\n";
+    wchar_t executablePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, executablePath, ARRAYSIZE(executablePath))) {
+        return false;
+    }
+    const std::wstring directory = DirectoryOf(executablePath);
+    const std::wstring dllAPath = directory + L"\\TestUnsignedA.dll";
+    const std::wstring dllBPath = directory + L"\\TestUnsignedB.dll";
+    if (GetFileAttributesW(dllAPath.c_str()) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(dllBPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::wcerr << L"runtime_cig_assets=FAIL reason=test DLLs are missing\n";
+        return false;
+    }
+
+    std::wstring commandLine = QuoteCommandLineArgument(executablePath) +
+        L" --runtime-cig-child " + QuoteCommandLineArgument(dllAPath) + L" " +
+        QuoteCommandLineArgument(dllBPath);
+    std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+    mutableCommand.push_back(L'\0');
+
+    STARTUPINFOW startup = {sizeof(startup)};
+    PROCESS_INFORMATION process = {};
+    if (!CreateProcessW(executablePath, mutableCommand.data(), nullptr, nullptr,
+                        FALSE, 0, nullptr, directory.c_str(), &startup, &process)) {
+        const DWORD error = GetLastError();
+        std::wcerr << L"runtime_cig_CreateProcess=FAIL error=" << error << L" ("
+                   << ErrorText(error) << L")\n";
+        return false;
+    }
+    CloseHandle(process.hThread);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 30000);
+    if (wait != WAIT_OBJECT_0) {
+        std::wcerr << L"runtime_cig_child_wait=FAIL result=" << wait << L'\n';
+        TerminateProcess(process.hProcess, 0xEE);
+        WaitForSingleObject(process.hProcess, 5000);
+        CloseHandle(process.hProcess);
+        return false;
+    }
+    DWORD exitCode = 0;
+    const BOOL gotExitCode = GetExitCodeProcess(process.hProcess, &exitCode);
+    CloseHandle(process.hProcess);
+    std::wcout << L"runtime_cig_child_exit=" << exitCode << L'\n';
+    const bool passed = gotExitCode && exitCode == 0;
+    std::wcout << L"runtime_cig_parent_result=" << (passed ? L"PASS" : L"FAIL")
+               << L'\n';
+    return passed;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+	std::wcout << std::unitbuf;
+	std::wcerr << std::unitbuf;
+
+	if (argc == 4 && wcscmp(argv[1], L"--runtime-cig-child") == 0) {
+		return RunRuntimeCigChild(argv[2], argv[3]);
+	}
+
     bool dump = false;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--dump") == 0) {
@@ -381,7 +610,7 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
-    std::wcout << L"MitigationAttributeProbe version=1\n";
+    std::wcout << L"MitigationAttributeProbe version=3\n";
     PrintOsVersion();
     std::wcout << L"candidate_entry_size=" << sizeof(CandidateAttributeEntry)
                << L" pointer_size=" << sizeof(void*) << L'\n';
@@ -393,7 +622,8 @@ int wmain(int argc, wchar_t** argv) {
 
     const bool single = RunSingleAttributeTest(dump);
     const bool multiple = RunMultipleAttributeTest(dump);
-    const bool passed = single && multiple;
+    const bool runtimeCig = RunRuntimeCigParentTest();
+    const bool passed = single && multiple && runtimeCig;
     std::wcout << L"\nprobe_execution=" << (passed ? L"PASS" : L"FAIL") << L'\n';
     return passed ? 0 : 1;
 }

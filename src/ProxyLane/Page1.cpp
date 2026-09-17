@@ -613,7 +613,7 @@ void CPage1::OnBnClickedOk()
 	StartProxy(TRUE);
 }
 
-BOOL CPage1::LoadProfileByName(LPCTSTR profileName)
+BOOL CPage1::LoadProfileByName(LPCTSTR profileName, BOOL rememberSelection)
 {
 	if (!profileName || !profileName[0])
 		return FALSE;
@@ -629,7 +629,22 @@ BOOL CPage1::LoadProfileByName(LPCTSTR profileName)
 
 	m_cfgls.SetCurSel(index);
 	UILoadCfg(&item);
+	if (rememberSelection)
+		m_profileStore.SetLastSelected(item.strName);
 	return TRUE;
+}
+
+void CPage1::GetSavedProfileNames(std::vector<CString>& names)
+{
+	names.clear();
+	const int count = m_cfgls.GetCount();
+	for (int index = 0; index < count; ++index)
+	{
+		CString name;
+		m_cfgls.GetLBText(index, name);
+		if (!name.IsEmpty())
+			names.push_back(name);
+	}
 }
 
 void CPage1::SetProfileDirty(BOOL dirty)

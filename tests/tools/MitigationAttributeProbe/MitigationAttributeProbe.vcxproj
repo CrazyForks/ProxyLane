@@ -45,5 +45,8 @@
   <ItemGroup>
     <ClCompile Include="MitigationAttributeProbe.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="UnsignedProbeDll.cpp" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

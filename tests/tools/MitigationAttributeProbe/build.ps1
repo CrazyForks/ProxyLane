@@ -12,11 +12,10 @@ if (-not $installation) {
 
 $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvarsall.bat'
 $source = Join-Path $PSScriptRoot 'MitigationAttributeProbe.cpp'
+$dllSource = Join-Path $PSScriptRoot 'UnsignedProbeDll.cpp'
 
-foreach ($build in @(
-    @{ Platform = 'Win32'; Architecture = 'x86' },
-    @{ Platform = 'x64'; Architecture = 'x64' }
-)) {
+$build = @{ Platform = 'x64'; Architecture = 'x64' }
+& {
     $outputDirectory = Join-Path $PSScriptRoot "bin\$($build.Platform)"
     $objectDirectory = Join-Path $PSScriptRoot "obj\$($build.Platform)"
     New-Item -ItemType Directory -Force -Path $outputDirectory, $objectDirectory | Out-Null
@@ -28,8 +27,23 @@ foreach ($build in @(
     if ($LASTEXITCODE -ne 0) {
         throw "Build failed for $($build.Platform)."
     }
+
+    foreach ($dll in @(
+        @{ Name = 'TestUnsignedA'; Value = '0xA11A0001UL' },
+        @{ Name = 'TestUnsignedB'; Value = '0xB22B0002UL' }
+    )) {
+        $dllOutput = Join-Path $outputDirectory "$($dll.Name).dll"
+        $dllObject = Join-Path $objectDirectory "$($dll.Name).obj"
+        $importLibrary = Join-Path $objectDirectory "$($dll.Name).lib"
+        $dllCommand = 'call "{0}" {1} >nul && cl.exe /nologo /LD /W4 /WX /O2 /MT /DPROBE_VALUE={2} /Fo"{3}" /Fe:"{4}" "{5}" /link /IMPLIB:"{6}"' -f `
+            $vcvars, $build.Architecture, $dll.Value, $dllObject, $dllOutput, $dllSource, $importLibrary
+        & $env:ComSpec /d /s /c $dllCommand
+        if ($LASTEXITCODE -ne 0) {
+            throw "DLL build failed for $($build.Platform) $($dll.Name)."
+        }
+    }
 }
 
 Write-Host "Built:"
-Write-Host "  $PSScriptRoot\bin\Win32\MitigationAttributeProbe.exe"
 Write-Host "  $PSScriptRoot\bin\x64\MitigationAttributeProbe.exe"
+Write-Host "The x64 directory also contains TestUnsignedA.dll and TestUnsignedB.dll."

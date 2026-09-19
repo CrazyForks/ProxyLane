@@ -838,7 +838,6 @@ BOOL CPage3::OnInitDialog()
 
 	DebugPrivilege(SE_DEBUG_NAME, TRUE);
 
-	UpdatePslist(TRUE);
 	SetTimer(TIMER_PSLIST, 2000, NULL);
 
 	m_ListCtrl.ThrowUnhandledMessage(TRUE);
@@ -2105,7 +2104,7 @@ void CPage3::OnBnClickedInjectdll()
 	if(!g_GlobalProxy || !(pPRC = g_GlobalProxy->GetPRCInstance()))
 	{
 		MessageBox(Localization::Get(_T("page3.start_proxy_first")),
-			Localization::Get(_T("status.proxy_stopped")), MB_ICONINFORMATION);
+			Localization::Get(_T("status.proxy_stopped")), MB_ICONERROR);
 		return;
 	}
 	if(!pPRC->GetPRCPipeName(szPipeName, MAX_PATH))
@@ -2191,12 +2190,20 @@ void CPage3::OnTimer(UINT_PTR nIDEvent)
 	{
 	case TIMER_PSLIST:
 		{
-			if (!m_btnWindowFinder.IsTracking())
+			// Hidden pages and a hidden top-level window still receive WM_TIMER.
+			// Avoid enumerating every process while the list cannot be seen.
+			if (IsWindowVisible() && !m_btnWindowFinder.IsTracking())
 				UpdatePslist(FALSE);
 		}
 		break;
 	}
 
+}
+
+void CPage3::OnPageActivated()
+{
+	if (!m_btnWindowFinder.IsTracking())
+		UpdatePslist(TRUE);
 }
 
 BOOL CPage3::ShouldInjectNewProcess(LPHookNewProcessInfo lphnpi)

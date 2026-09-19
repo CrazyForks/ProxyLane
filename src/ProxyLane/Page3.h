@@ -158,6 +158,7 @@ private:
 
 public:
 
+	void OnPageActivated();
 	int UpdatePslist(BOOL bRefresh);
 	BOOL ProxyProcess(DWORD dwPid);
 

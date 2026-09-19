@@ -339,6 +339,8 @@ void CMainTab::SelectPage(int pageIndex)
 	if (m_pages[m_currentPage])
 	{
 		m_pages[m_currentPage]->ShowWindow(SW_SHOW);
+		if (m_currentPage == PAGE_APPLICATIONS)
+			m_page3.OnPageActivated();
 		m_pages[m_currentPage]->PostMessage(WM_SIZE);
 		m_pages[m_currentPage]->RedrawWindow(
 			NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);

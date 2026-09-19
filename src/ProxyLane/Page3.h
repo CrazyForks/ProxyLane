@@ -86,6 +86,12 @@ enum AppLaunchResult
 	APP_LAUNCH_ELEVATED_HELPER_FAILED
 };
 
+enum AppLaunchElevationMode
+{
+	APP_LAUNCH_ELEVATION_AUTO = 0,
+	APP_LAUNCH_ELEVATION_FORCE_ADMIN
+};
+
 class CPage3 : public CModernDialog
 	, public IProxyLog
 {
@@ -166,7 +172,8 @@ public:
 	AppLaunchResult LaunchAndProxyApp(
 		LPCTSTR fileName,
 		const std::vector<CString>& extraArguments,
-		BOOL strictInjection);
+		BOOL strictInjection,
+		AppLaunchElevationMode elevationMode = APP_LAUNCH_ELEVATION_AUTO);
 	BOOL InjectNewProcess(LPHookNewProcessInfo lphnpi);
 	BOOL ShouldProxyChildProcess(LPHookNewProcessInfo lphnpi);
 

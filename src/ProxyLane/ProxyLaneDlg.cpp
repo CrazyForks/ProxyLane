@@ -6,6 +6,7 @@
 #include "ProxyLaneDlg.h"
 #include "AppVersion.h"
 #include "Localization.h"
+#include <afxole.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -15,6 +16,7 @@
 
 #define WM_SHELLICON_NOTIFY				(WM_APP+100)
 #define WM_AUTOMATION_START				(WM_APP+101)
+#define WM_DEFERRED_FILE_DRAG_LEAVE		(WM_APP+310)
 UINT s_uTaskbarRestart = -1;
 
 namespace
@@ -96,7 +98,298 @@ namespace
 		escaped.Replace(_T("&"), _T("&&"));
 		return escaped;
 	}
+
+	BOOL IsVistaOrLater()
+	{
+		OSVERSIONINFO versionInfo = { sizeof(versionInfo) };
+		return GetVersionEx(&versionInfo) && versionInfo.dwMajorVersion >= 6;
+	}
 }
+
+class CAdminDropOverlay : public CWnd
+{
+public:
+	CAdminDropOverlay()
+		: m_hot(FALSE)
+	{
+	}
+
+	BOOL CreateOverlay(CWnd* parent)
+	{
+		LPCTSTR className = AfxRegisterWndClass(
+			CS_HREDRAW | CS_VREDRAW,
+			LoadCursor(NULL, IDC_ARROW),
+			NULL,
+			NULL);
+		if (!CreateEx(
+			WS_EX_NOPARENTNOTIFY,
+			className,
+			_T(""),
+			WS_CHILD | WS_CLIPSIBLINGS,
+			CRect(0, 0, 0, 0),
+			parent,
+			0x7f10))
+		{
+			return FALSE;
+		}
+
+		UiTheme::CreateUiFont(m_titleFont, m_hWnd, 10, FW_SEMIBOLD);
+		UiTheme::CreateUiFont(m_hintFont, m_hWnd, 8, FW_NORMAL);
+		m_title = Localization::Get(_T("dialog.admin_drop_title"));
+		m_hint = Localization::Get(IsVistaOrLater()
+			? _T("dialog.admin_drop_hint")
+			: _T("dialog.admin_drop_hint_xp"));
+		m_hotTitle = Localization::Get(_T("dialog.admin_drop_hot_title"));
+		m_hotHint = Localization::Get(IsVistaOrLater()
+			? _T("dialog.admin_drop_hot_hint")
+			: _T("dialog.admin_drop_hot_hint_xp"));
+		return TRUE;
+	}
+
+	void SetHot(BOOL hot)
+	{
+		if (m_hot == hot)
+			return;
+		m_hot = hot;
+		Invalidate(FALSE);
+	}
+
+protected:
+	afx_msg BOOL OnEraseBkgnd(CDC*)
+	{
+		return TRUE;
+	}
+
+	afx_msg void OnPaint()
+	{
+		CPaintDC dc(this);
+		CRect rect;
+		GetClientRect(&rect);
+		dc.SetBkMode(TRANSPARENT);
+
+		const COLORREF fill = m_hot ? RGB(219, 234, 254) : UiTheme::AccentSoft();
+		const COLORREF border = m_hot ? UiTheme::AccentHover() : UiTheme::Accent();
+		CBrush backgroundBrush(fill);
+		CPen borderPen(PS_SOLID, UiTheme::ScaleForWindow(m_hWnd, m_hot ? 2 : 1), border);
+		CBrush* oldBrush = dc.SelectObject(&backgroundBrush);
+		CPen* oldPen = dc.SelectObject(&borderPen);
+		CRect frame(rect);
+		frame.DeflateRect(1, 1);
+		const int radius = UiTheme::ScaleForWindow(m_hWnd, 10);
+		dc.RoundRect(frame, CPoint(radius, radius));
+
+		const int shieldLeft = UiTheme::ScaleForWindow(m_hWnd, 18);
+		const int shieldTop = (rect.Height() - UiTheme::ScaleForWindow(m_hWnd, 34)) / 2;
+		const int shieldWidth = UiTheme::ScaleForWindow(m_hWnd, 30);
+		const int shieldHeight = UiTheme::ScaleForWindow(m_hWnd, 34);
+		POINT shield[] =
+		{
+			{ shieldLeft + shieldWidth / 2, shieldTop },
+			{ shieldLeft + shieldWidth, shieldTop + shieldHeight / 5 },
+			{ shieldLeft + shieldWidth * 9 / 10, shieldTop + shieldHeight * 3 / 5 },
+			{ shieldLeft + shieldWidth / 2, shieldTop + shieldHeight },
+			{ shieldLeft + shieldWidth / 10, shieldTop + shieldHeight * 3 / 5 },
+			{ shieldLeft, shieldTop + shieldHeight / 5 }
+		};
+		CBrush shieldBrush(border);
+		dc.SelectObject(&shieldBrush);
+		dc.Polygon(shield, _countof(shield));
+
+		CPen detailPen(PS_SOLID, UiTheme::ScaleForWindow(m_hWnd, 2), RGB(255, 255, 255));
+		dc.SelectObject(&detailPen);
+		dc.MoveTo(shieldLeft + shieldWidth / 2, shieldTop + UiTheme::ScaleForWindow(m_hWnd, 7));
+		dc.LineTo(shieldLeft + shieldWidth / 2, shieldTop + shieldHeight - UiTheme::ScaleForWindow(m_hWnd, 7));
+
+		dc.SelectObject(oldPen);
+		dc.SelectObject(oldBrush);
+
+		CRect textRect(rect);
+		textRect.left = shieldLeft + shieldWidth + UiTheme::ScaleForWindow(m_hWnd, 13);
+		textRect.right -= UiTheme::ScaleForWindow(m_hWnd, 12);
+		textRect.top += UiTheme::ScaleForWindow(m_hWnd, 13);
+		dc.SetTextColor(UiTheme::TextPrimary());
+		CFont* oldFont = dc.SelectObject(&m_titleFont);
+		dc.DrawText(m_hot ? m_hotTitle : m_title, textRect,
+			DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+		textRect.top += UiTheme::ScaleForWindow(m_hWnd, 25);
+		dc.SelectObject(&m_hintFont);
+		dc.SetTextColor(UiTheme::TextSecondary());
+		dc.DrawText(m_hot ? m_hotHint : m_hint, textRect,
+			DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+		dc.SelectObject(oldFont);
+	}
+
+	BOOL m_hot;
+	CString m_title;
+	CString m_hint;
+	CString m_hotTitle;
+	CString m_hotHint;
+	CFont m_titleFont;
+	CFont m_hintFont;
+
+	DECLARE_MESSAGE_MAP()
+};
+
+BEGIN_MESSAGE_MAP(CAdminDropOverlay, CWnd)
+	ON_WM_ERASEBKGND()
+	ON_WM_PAINT()
+END_MESSAGE_MAP()
+
+class CNormalDropBanner : public CWnd
+{
+public:
+	BOOL CreateBanner(CWnd* parent)
+	{
+		LPCTSTR className = AfxRegisterWndClass(
+			CS_HREDRAW | CS_VREDRAW,
+			LoadCursor(NULL, IDC_ARROW),
+			NULL,
+			NULL);
+		if (!CreateEx(
+			WS_EX_NOPARENTNOTIFY,
+			className,
+			_T(""),
+			WS_CHILD | WS_CLIPSIBLINGS,
+			CRect(0, 0, 0, 0),
+			parent,
+			0x7f11))
+		{
+			return FALSE;
+		}
+
+		UiTheme::CreateUiFont(m_font, m_hWnd, 9, FW_SEMIBOLD);
+		m_text = Localization::Get(_T("dialog.normal_drop_hint"));
+		return TRUE;
+	}
+
+protected:
+	afx_msg BOOL OnEraseBkgnd(CDC*)
+	{
+		return TRUE;
+	}
+
+	afx_msg void OnPaint()
+	{
+		CPaintDC dc(this);
+		CRect rect;
+		GetClientRect(&rect);
+		dc.SetBkMode(TRANSPARENT);
+
+		CBrush backgroundBrush(UiTheme::SuccessSoft());
+		CPen borderPen(PS_SOLID, UiTheme::ScaleForWindow(m_hWnd, 1), UiTheme::Success());
+		CBrush* oldBrush = dc.SelectObject(&backgroundBrush);
+		CPen* oldPen = dc.SelectObject(&borderPen);
+		CRect frame(rect);
+		frame.DeflateRect(1, 1);
+		const int radius = UiTheme::ScaleForWindow(m_hWnd, 10);
+		dc.RoundRect(frame, CPoint(radius, radius));
+		dc.SelectObject(oldPen);
+		dc.SelectObject(oldBrush);
+
+		dc.SetTextColor(UiTheme::Success());
+		CFont* oldFont = dc.SelectObject(&m_font);
+		dc.DrawText(m_text, rect,
+			DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+		dc.SelectObject(oldFont);
+	}
+
+	CString m_text;
+	CFont m_font;
+
+	DECLARE_MESSAGE_MAP()
+};
+
+BEGIN_MESSAGE_MAP(CNormalDropBanner, CWnd)
+	ON_WM_ERASEBKGND()
+	ON_WM_PAINT()
+END_MESSAGE_MAP()
+
+class CProxyLaneFileDropTarget : public COleDropTarget
+{
+public:
+	explicit CProxyLaneFileDropTarget(CProxyLaneDlg* owner)
+		: m_owner(owner)
+	{
+	}
+
+	virtual DROPEFFECT OnDragEnter(
+		CWnd* window,
+		COleDataObject* dataObject,
+		DWORD keyState,
+		CPoint point)
+	{
+		return OnDragOver(window, dataObject, keyState, point);
+	}
+
+	virtual DROPEFFECT OnDragOver(
+		CWnd* window,
+		COleDataObject* dataObject,
+		DWORD,
+		CPoint point)
+	{
+		if (!m_owner || !dataObject || !dataObject->IsDataAvailable(CF_HDROP))
+			return DROPEFFECT_NONE;
+
+		m_owner->BeginFileDrag();
+		CPoint ownerPoint(point);
+		if (window && window->GetSafeHwnd())
+		{
+			window->ClientToScreen(&ownerPoint);
+			m_owner->ScreenToClient(&ownerPoint);
+		}
+		if (m_owner->m_adminDropOverlay)
+			m_owner->m_adminDropOverlay->SetHot(
+				m_owner->IsPointInAdminDropOverlay(ownerPoint));
+		return DROPEFFECT_COPY;
+	}
+
+	virtual void OnDragLeave(CWnd*)
+	{
+		if (m_owner)
+			m_owner->ScheduleFileDragLeave();
+	}
+
+	virtual BOOL OnDrop(
+		CWnd* window,
+		COleDataObject* dataObject,
+		DROPEFFECT,
+		CPoint point)
+	{
+		if (!m_owner || !dataObject || !dataObject->IsDataAvailable(CF_HDROP))
+			return FALSE;
+
+		CPoint ownerPoint(point);
+		if (window && window->GetSafeHwnd())
+		{
+			window->ClientToScreen(&ownerPoint);
+			m_owner->ScreenToClient(&ownerPoint);
+		}
+		const AppLaunchElevationMode elevationMode =
+			m_owner->IsPointInAdminDropOverlay(ownerPoint)
+			? APP_LAUNCH_ELEVATION_FORCE_ADMIN
+			: APP_LAUNCH_ELEVATION_AUTO;
+
+		STGMEDIUM medium = { 0 };
+		FORMATETC format = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+		if (!dataObject->GetData(CF_HDROP, &medium, &format))
+		{
+			m_owner->EndFileDrag();
+			return FALSE;
+		}
+
+		m_owner->EndFileDrag();
+		const BOOL handled = medium.tymed == TYMED_HGLOBAL && medium.hGlobal
+			? m_owner->HandleDroppedFiles(
+				reinterpret_cast<HDROP>(medium.hGlobal), elevationMode)
+			: FALSE;
+		ReleaseStgMedium(&medium);
+		return handled;
+	}
+
+private:
+	CProxyLaneDlg* m_owner;
+};
 
 //////////////////////////////////////////////////////////////////////////
 // ShellNotifyIcon
@@ -206,6 +499,9 @@ ShellNotifyIcon_AddInfo(
 CProxyLaneDlg::CProxyLaneDlg(CWnd* pParent /*=NULL*/)
 	: CModernDialog(CProxyLaneDlg::IDD, pParent)
 	, m_hInactiveIcon(NULL)
+	, m_adminDropOverlay(NULL)
+	, m_normalDropBanner(NULL)
+	, m_fileDragGeneration(0)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -224,6 +520,7 @@ BEGIN_MESSAGE_MAP(CProxyLaneDlg, CModernDialog)
 	ON_MESSAGE(WM_AUTOMATION_START, OnAutomationStart)
 	ON_MESSAGE(WM_PROXY_STATUS_CHANGED, OnProxyStatusChanged)
 	ON_MESSAGE(WM_PROFILE_COMMAND_REQUEST, OnProfileCommandRequest)
+	ON_MESSAGE(WM_DEFERRED_FILE_DRAG_LEAVE, OnDeferredFileDragLeave)
 	//}}AFX_MSG_MAP
 	ON_WM_DESTROY()
 	ON_WM_SIZE()
@@ -263,6 +560,44 @@ BOOL CProxyLaneDlg::OnInitDialog()
 		EndDialog(IDCANCEL);
 		return FALSE;
 	}
+
+	m_adminDropOverlay = new CAdminDropOverlay();
+	if (!m_adminDropOverlay->CreateOverlay(this))
+	{
+		delete m_adminDropOverlay;
+		m_adminDropOverlay = NULL;
+	}
+	else
+	{
+		PositionAdminDropOverlay();
+		m_adminDropOverlay->ShowWindow(SW_HIDE);
+	}
+	m_normalDropBanner = new CNormalDropBanner();
+	if (!m_normalDropBanner->CreateBanner(this))
+	{
+		delete m_normalDropBanner;
+		m_normalDropBanner = NULL;
+	}
+	else
+	{
+		PositionNormalDropBanner();
+		m_normalDropBanner->ShowWindow(SW_HIDE);
+	}
+
+	RegisterFileDropTarget(this);
+	RegisterFileDropTarget(&m_MainTab);
+	RegisterFileDropTarget(m_MainTab.GetPage1());
+	RegisterFileDropTarget(m_MainTab.GetPage2());
+	RegisterFileDropTarget(m_MainTab.GetPage3());
+	RegisterFileDropTarget(m_MainTab.GetPage4());
+	RegisterFileDropTarget(m_MainTab.GetPage5());
+	if (m_adminDropOverlay)
+		RegisterFileDropTarget(m_adminDropOverlay);
+	if (m_normalDropBanner)
+		RegisterFileDropTarget(m_normalDropBanner);
+
+	// Keep the legacy shell-drop path as a fallback if OLE registration is not
+	// available on a particular window or third-party shell implementation.
 	DragAcceptFiles(TRUE);
 
 	SetWindowText(AppVersion::DisplayTitle());
@@ -271,6 +606,9 @@ BOOL CProxyLaneDlg::OnInitDialog()
 
 	AddTaskbarIcons();
 	m_MainTab.FinalizeLayout(FALSE);
+	// The dialog is hidden while its child pages are initialized, so explicitly
+	// apply the normal dialog centering before its first visible frame.
+	CenterWindow();
 	SetRedraw(TRUE);
 
 	if (theApp.GetAutomationOptions().enabled)
@@ -515,6 +853,28 @@ HCURSOR CProxyLaneDlg::OnQueryDragIcon()
 
 void CProxyLaneDlg::OnDestroy()
 {
+	EndFileDrag();
+	for (size_t index = 0; index < m_fileDropTargets.size(); ++index)
+	{
+		m_fileDropTargets[index]->Revoke();
+		delete m_fileDropTargets[index];
+	}
+	m_fileDropTargets.clear();
+	if (m_adminDropOverlay)
+	{
+		if (m_adminDropOverlay->GetSafeHwnd())
+			m_adminDropOverlay->DestroyWindow();
+		delete m_adminDropOverlay;
+		m_adminDropOverlay = NULL;
+	}
+	if (m_normalDropBanner)
+	{
+		if (m_normalDropBanner->GetSafeHwnd())
+			m_normalDropBanner->DestroyWindow();
+		delete m_normalDropBanner;
+		m_normalDropBanner = NULL;
+	}
+
 	theApp.DeactivateProfileCommandServer();
 	theApp.ReleaseAutomationLaunchGate();
 	ShellNotifyIcon_Delete(
@@ -698,6 +1058,8 @@ void CProxyLaneDlg::OnSize(UINT nType, int cx, int cy)
 		GetClientRect(rc);
 		m_MainTab.MoveWindow(rc);
 	}
+	PositionAdminDropOverlay();
+	PositionNormalDropBanner();
 }
 
 void CProxyLaneDlg::OnGetMinMaxInfo(MINMAXINFO* minMaxInfo)
@@ -707,17 +1069,148 @@ void CProxyLaneDlg::OnGetMinMaxInfo(MINMAXINFO* minMaxInfo)
 	minMaxInfo->ptMinTrackSize.y = UiTheme::ScaleForWindow(m_hWnd, 440);
 }
 
-void CProxyLaneDlg::OnDropFiles(HDROP dropInfo)
+BOOL CProxyLaneDlg::RegisterFileDropTarget(CWnd* window)
+{
+	if (!window || !window->GetSafeHwnd())
+		return FALSE;
+
+	CProxyLaneFileDropTarget* target = new CProxyLaneFileDropTarget(this);
+	if (!target->Register(window))
+	{
+		delete target;
+		return FALSE;
+	}
+	m_fileDropTargets.push_back(target);
+	return TRUE;
+}
+
+void CProxyLaneDlg::BeginFileDrag()
+{
+	++m_fileDragGeneration;
+	if (!m_adminDropOverlay && !m_normalDropBanner)
+		return;
+	if (!m_MainTab.IsProxyRunning())
+	{
+		if (m_adminDropOverlay && m_adminDropOverlay->IsWindowVisible())
+			m_adminDropOverlay->ShowWindow(SW_HIDE);
+		if (m_normalDropBanner && m_normalDropBanner->IsWindowVisible())
+			m_normalDropBanner->ShowWindow(SW_HIDE);
+		return;
+	}
+
+	if (m_adminDropOverlay && !m_adminDropOverlay->IsWindowVisible())
+	{
+		PositionAdminDropOverlay();
+		m_adminDropOverlay->SetHot(FALSE);
+		m_adminDropOverlay->ShowWindow(SW_SHOWNOACTIVATE);
+		m_adminDropOverlay->SetWindowPos(
+			&wndTop, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	}
+	if (m_normalDropBanner && !m_normalDropBanner->IsWindowVisible())
+	{
+		PositionNormalDropBanner();
+		m_normalDropBanner->ShowWindow(SW_SHOWNOACTIVATE);
+		m_normalDropBanner->SetWindowPos(
+			&wndTop, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	}
+}
+
+void CProxyLaneDlg::ScheduleFileDragLeave()
+{
+	const UINT generation = ++m_fileDragGeneration;
+	PostMessage(WM_DEFERRED_FILE_DRAG_LEAVE, generation, 0);
+}
+
+void CProxyLaneDlg::EndFileDrag()
+{
+	++m_fileDragGeneration;
+	if (m_adminDropOverlay && m_adminDropOverlay->GetSafeHwnd())
+	{
+		m_adminDropOverlay->SetHot(FALSE);
+		m_adminDropOverlay->ShowWindow(SW_HIDE);
+	}
+	if (m_normalDropBanner && m_normalDropBanner->GetSafeHwnd())
+		m_normalDropBanner->ShowWindow(SW_HIDE);
+}
+
+LRESULT CProxyLaneDlg::OnDeferredFileDragLeave(WPARAM wParam, LPARAM)
+{
+	if (static_cast<UINT>(wParam) == m_fileDragGeneration)
+		EndFileDrag();
+	return 0;
+}
+
+void CProxyLaneDlg::PositionAdminDropOverlay()
+{
+	if (!m_adminDropOverlay || !m_adminDropOverlay->GetSafeHwnd())
+		return;
+
+	CRect clientRect;
+	GetClientRect(&clientRect);
+	const int width = min(
+		UiTheme::ScaleForWindow(m_hWnd, 300),
+		max(0, clientRect.Width() - UiTheme::ScaleForWindow(m_hWnd, 32)));
+	const int height = UiTheme::ScaleForWindow(m_hWnd, 76);
+	const int margin = UiTheme::ScaleForWindow(m_hWnd, 16);
+	m_adminDropOverlay->SetWindowPos(
+		&wndTop,
+		max(margin, clientRect.right - width - margin),
+		max(margin, clientRect.bottom - height - margin),
+		width,
+		height,
+		SWP_NOACTIVATE);
+}
+
+void CProxyLaneDlg::PositionNormalDropBanner()
+{
+	if (!m_normalDropBanner || !m_normalDropBanner->GetSafeHwnd())
+		return;
+
+	CRect clientRect;
+	GetClientRect(&clientRect);
+	const int horizontalMargin = UiTheme::ScaleForWindow(m_hWnd, 16);
+	const int width = min(
+		UiTheme::ScaleForWindow(m_hWnd, 420),
+		max(0, clientRect.Width() - horizontalMargin * 2));
+	const int height = UiTheme::ScaleForWindow(m_hWnd, 44);
+	m_normalDropBanner->SetWindowPos(
+		&wndTop,
+		clientRect.left + (clientRect.Width() - width) / 2,
+		clientRect.top + UiTheme::ScaleForWindow(m_hWnd, 16),
+		width,
+		height,
+		SWP_NOACTIVATE);
+}
+
+BOOL CProxyLaneDlg::IsPointInAdminDropOverlay(CPoint clientPoint) const
+{
+	if (!m_adminDropOverlay || !m_adminDropOverlay->GetSafeHwnd() ||
+		!m_adminDropOverlay->IsWindowVisible() || !m_MainTab.IsProxyRunning())
+	{
+		return FALSE;
+	}
+
+	CRect overlayRect;
+	m_adminDropOverlay->GetWindowRect(&overlayRect);
+	CPoint screenPoint(clientPoint);
+	ClientToScreen(&screenPoint);
+	return overlayRect.PtInRect(screenPoint);
+}
+
+BOOL CProxyLaneDlg::HandleDroppedFiles(
+	HDROP dropInfo,
+	AppLaunchElevationMode elevationMode)
 {
 	CPage1* page1 = m_MainTab.GetPage1();
 	CPage3* page3 = m_MainTab.GetPage3();
 	if (!page1 || !page3 || !page1->IsProxyRunning())
 	{
-		DragFinish(dropInfo);
 		m_MainTab.ShowTransientStatus(
 			Localization::Get(_T("dialog.unsaved_drop")),
 			CStatusLabel::TONE_INFO);
-		return;
+		return TRUE;
 	}
 
 	const UINT fileCount = DragQueryFile(dropInfo, 0xFFFFFFFF, NULL, 0);
@@ -734,13 +1227,17 @@ void CProxyLaneDlg::OnDropFiles(HDROP dropInfo)
 
 		CString path(&pathBuffer[0]);
 		const AppLaunchResult result = page3->LaunchAndProxyApp(
-			path, noExtraArguments, TRUE);
+			path, noExtraArguments, TRUE, elevationMode);
 		if (result == APP_LAUNCH_SUCCESS)
 		{
 			int slash = max(path.ReverseFind(_T('\\')), path.ReverseFind(_T('/')));
 			CString displayName = slash >= 0 ? path.Mid(slash + 1) : path;
 			CString status;
-			status = Localization::Format(_T("dialog.started_proxy"), static_cast<LPCTSTR>(displayName));
+			status = Localization::Format(
+				elevationMode == APP_LAUNCH_ELEVATION_FORCE_ADMIN
+				? _T("dialog.started_proxy_admin")
+				: _T("dialog.started_proxy"),
+				static_cast<LPCTSTR>(displayName));
 			m_MainTab.ShowTransientStatus(status, CStatusLabel::TONE_SUCCESS);
 			continue;
 		}
@@ -759,6 +1256,13 @@ void CProxyLaneDlg::OnDropFiles(HDROP dropInfo)
 
 		MessageBox(message, Localization::Get(_T("dialog.drop_failed_title")), MB_OK | MB_ICONERROR);
 	}
+	return fileCount > 0;
+}
 
+
+void CProxyLaneDlg::OnDropFiles(HDROP dropInfo)
+{
+	EndFileDrag();
+	HandleDroppedFiles(dropInfo, APP_LAUNCH_ELEVATION_AUTO);
 	DragFinish(dropInfo);
 }

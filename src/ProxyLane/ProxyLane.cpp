@@ -156,8 +156,11 @@ BOOL CProxyLaneApp::InitInstance()
 	// 例如修改为公司或组织名
 	SetRegistryKey(_T("ProxyLane"));
 
-	AfxOleInit();
-	CoInitializeEx(NULL, COINIT_MULTITHREADED);
+	// OLE drag-and-drop requires the UI thread to remain in the STA selected by
+	// AfxOleInit.  A second MTA initialization only fails with
+	// RPC_E_CHANGED_MODE and never changed the apartment in earlier builds.
+	if (!AfxOleInit())
+		return FALSE;
 
 	CString parseError;
 	if (!ParseAutomationOptions(

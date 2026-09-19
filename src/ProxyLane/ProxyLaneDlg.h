@@ -5,7 +5,11 @@
 
 #include "MainTab.h"
 #include "ModernUI.h"
+#include <vector>
 
+class CProxyLaneFileDropTarget;
+class CAdminDropOverlay;
+class CNormalDropBanner;
 
 // CProxyLaneDlg 对话框
 class CProxyLaneDlg : public CModernDialog
@@ -23,10 +27,16 @@ public:
 
 // 实现
 protected:
+	friend class CProxyLaneFileDropTarget;
+
 	HICON m_hIcon;
 	HICON m_hInactiveIcon;
 
 	CMainTab m_MainTab;
+	std::vector<CProxyLaneFileDropTarget*> m_fileDropTargets;
+	CAdminDropOverlay* m_adminDropOverlay;
+	CNormalDropBanner* m_normalDropBanner;
+	UINT m_fileDragGeneration;
 
 
 	BOOL AddTaskbarIcons();
@@ -38,6 +48,14 @@ protected:
 	void ShowAndActivate();
 	void FailAutomation(int exitCode);
 	BOOL RefreshProfileCommandServer();
+	BOOL RegisterFileDropTarget(CWnd* window);
+	void BeginFileDrag();
+	void ScheduleFileDragLeave();
+	void EndFileDrag();
+	void PositionAdminDropOverlay();
+	void PositionNormalDropBanner();
+	BOOL IsPointInAdminDropOverlay(CPoint clientPoint) const;
+	BOOL HandleDroppedFiles(HDROP dropInfo, AppLaunchElevationMode elevationMode);
 
 	// 生成的消息映射函数
 	virtual BOOL OnInitDialog();
@@ -53,6 +71,7 @@ public:
 	afx_msg LRESULT OnAutomationStart(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnProxyStatusChanged(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnProfileCommandRequest(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnDeferredFileDragLeave(WPARAM wParam, LPARAM lParam);
 	afx_msg void OnSize(UINT nType, int cx, int cy);
 	afx_msg void OnGetMinMaxInfo(MINMAXINFO* minMaxInfo);
 	afx_msg void OnDropFiles(HDROP dropInfo);

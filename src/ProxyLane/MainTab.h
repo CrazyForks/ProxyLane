@@ -44,6 +44,7 @@ public:
 	CPage2* GetPage2() { return &m_page2; }
 	CPage3* GetPage3() { return &m_page3; }
 	CPage4* GetPage4() { return &m_page4; }
+	CPage5* GetPage5() { return &m_page5; }
 
 	void AddLogText(int uFlag, LPCTSTR text);
 	void CopyText();

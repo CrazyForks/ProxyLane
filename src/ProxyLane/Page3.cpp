@@ -2458,7 +2458,8 @@ void CPage3::OnDropAppFile(TCHAR *pFileName)
 AppLaunchResult CPage3::LaunchAndProxyApp(
 	LPCTSTR fileName,
 	const std::vector<CString>& extraArguments,
-	BOOL strictInjection)
+	BOOL strictInjection,
+	AppLaunchElevationMode elevationMode)
 {
 	if (!fileName || !fileName[0])
 		return APP_LAUNCH_INVALID_TARGET;
@@ -2523,6 +2524,16 @@ AppLaunchResult CPage3::LaunchAndProxyApp(
 	{
 		commandLine += _T(" ");
 		commandLine += QuoteCommandLineArgument(extraArguments[i]);
+	}
+
+	if (elevationMode == APP_LAUNCH_ELEVATION_FORCE_ADMIN)
+	{
+		myWow64RevertWow64FsRedirection(WowRedirOldValue);
+		return LaunchElevatedAndProxy(
+			GetSafeHwnd(),
+			szTargetPath,
+			commandLine,
+			szBaseDir[0] == 0 ? NULL : szBaseDir);
 	}
 
 	LPTSTR mutableCommandLine = commandLine.GetBuffer();
@@ -2596,5 +2607,4 @@ AppLaunchResult CPage3::LaunchAndProxyApp(
 	CloseHandle(pi.hThread);
 	return APP_LAUNCH_SUCCESS;
 }
-
 

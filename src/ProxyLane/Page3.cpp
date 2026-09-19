@@ -903,6 +903,9 @@ static AppLaunchResult LaunchElevatedAndProxy(
 		workingDirectory ? workingDirectory : L""
 	};
 	std::vector<BYTE> utf8Fields[_countof(wideFields)];
+	const DWORD utf8ConversionFlags = IsVistaOrLater()
+		? WC_ERR_INVALID_CHARS
+		: 0;
 	for (size_t index = 0; index < _countof(wideFields); ++index)
 	{
 		const int wideLength = static_cast<int>(wcslen(wideFields[index]));
@@ -910,7 +913,7 @@ static AppLaunchResult LaunchElevatedAndProxy(
 			continue;
 		const int utf8Length = WideCharToMultiByte(
 			CP_UTF8,
-			WC_ERR_INVALID_CHARS,
+			utf8ConversionFlags,
 			wideFields[index],
 			wideLength,
 			NULL,
@@ -922,7 +925,7 @@ static AppLaunchResult LaunchElevatedAndProxy(
 		utf8Fields[index].resize(utf8Length);
 		if (WideCharToMultiByte(
 			CP_UTF8,
-			WC_ERR_INVALID_CHARS,
+			utf8ConversionFlags,
 			wideFields[index],
 			wideLength,
 			reinterpret_cast<char*>(&utf8Fields[index][0]),
@@ -2607,4 +2610,3 @@ AppLaunchResult CPage3::LaunchAndProxyApp(
 	CloseHandle(pi.hThread);
 	return APP_LAUNCH_SUCCESS;
 }
-

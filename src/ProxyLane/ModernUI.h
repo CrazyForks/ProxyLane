@@ -97,6 +97,7 @@ protected:
 	virtual BOOL PreTranslateMessage(MSG* message);
 	virtual void DrawItem(LPDRAWITEMSTRUCT drawItemStruct);
 	afx_msg void OnSize(UINT type, int cx, int cy);
+	afx_msg LRESULT OnInitializeTooltip(WPARAM wParam, LPARAM lParam);
 	void UpdateOverflowTooltip();
 
 	Tone m_tone;

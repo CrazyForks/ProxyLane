@@ -4,6 +4,11 @@
 #include "resource.h"
 #include "Localization.h"
 
+namespace
+{
+	const UINT WM_STATUS_LABEL_INITIALIZE_TOOLTIP = WM_APP + 1;
+}
+
 namespace UiTheme
 {
 	COLORREF WindowBackground()  { return RGB(245, 247, 250); }
@@ -302,6 +307,18 @@ void CStatusLabel::PreSubclassWindow()
 {
 	ModifyStyle(0x0000001F, SS_OWNERDRAW | SS_NOTIFY);
 	CStatic::PreSubclassWindow();
+
+	// A dynamically-created CStatusLabel reaches PreSubclassWindow while MFC's
+	// CBT window-creation hook is still attaching this CWnd. Creating another
+	// CWnd here would nest AfxHookWindowCreate and assert in Debug builds.
+	PostMessage(WM_STATUS_LABEL_INITIALIZE_TOOLTIP);
+}
+
+LRESULT CStatusLabel::OnInitializeTooltip(WPARAM, LPARAM)
+{
+	if (m_tooltip.GetSafeHwnd())
+		return 0;
+
 	CWnd* parent = GetParent();
 	if (parent && m_tooltip.Create(parent, TTS_ALWAYSTIP | TTS_NOPREFIX))
 	{
@@ -310,10 +327,12 @@ void CStatusLabel::PreSubclassWindow()
 		m_tooltip.Activate(FALSE);
 		UpdateOverflowTooltip();
 	}
+	return 0;
 }
 
 BEGIN_MESSAGE_MAP(CStatusLabel, CStatic)
 	ON_WM_SIZE()
+	ON_MESSAGE(WM_STATUS_LABEL_INITIALIZE_TOOLTIP, OnInitializeTooltip)
 END_MESSAGE_MAP()
 
 BOOL CStatusLabel::PreTranslateMessage(MSG* message)

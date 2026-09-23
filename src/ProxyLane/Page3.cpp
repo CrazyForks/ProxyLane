@@ -1,4 +1,4 @@
-﻿// Page3.cpp : 实现文件
+// Page3.cpp : 实现文件
 //
 
 #include "stdafx.h"
@@ -10,6 +10,7 @@
 #include "Localization.h"
 #include "..\ProxyLaneHook\token.h"
 #include "..\ProxyLaneHook\ElevatedLaunchProtocol.h"
+#include "PackagedAppSupport.h"
 
 #include "..\ProxyLaneHook\ProxyModule.h"
 
@@ -2514,6 +2515,18 @@ AppLaunchResult CPage3::LaunchAndProxyApp(
 		return APP_LAUNCH_INVALID_TARGET;
 	}
 
+	CString manifestDir;
+	if (PackagedAppSupport::IsPackagedAppPath(szTargetPath, manifestDir))
+	{
+		AppLaunchResult pkgResult = LaunchPackagedAppAndProxy(szTargetPath, manifestDir, extraArguments);
+		if (pkgResult == APP_LAUNCH_SUCCESS)
+		{
+			myWow64RevertWow64FsRedirection(WowRedirOldValue);
+			return APP_LAUNCH_SUCCESS;
+		}
+		// 若包模式激活失败（如未向系统注册/解压目录），自动降级尝试下方常规 CreateProcess
+	}
+
 	if (!szBaseDir[0])
 		GetAppFolderPath(szTargetPath, szBaseDir);
 
@@ -2566,6 +2579,24 @@ AppLaunchResult CPage3::LaunchAndProxyApp(
 				commandLine,
 				szBaseDir[0] == 0 ? NULL : szBaseDir);
 		}
+#ifndef APPMODEL_ERROR_NO_PACKAGE
+#define APPMODEL_ERROR_NO_PACKAGE 15700L
+#endif
+		if (createProcessError == APPMODEL_ERROR_NO_PACKAGE)
+		{
+			CString fallbackManifestDir;
+			if (PackagedAppSupport::FindManifestDir(szTargetPath, fallbackManifestDir))
+			{
+				AppLaunchResult pkgResult = LaunchPackagedAppAndProxy(
+					szTargetPath,
+					fallbackManifestDir,
+					extraArguments);
+				if (pkgResult == APP_LAUNCH_SUCCESS)
+				{
+					return APP_LAUNCH_SUCCESS;
+				}
+			}
+		}
 		return APP_LAUNCH_CREATE_PROCESS_FAILED;
 	}
 
@@ -2610,3 +2641,113 @@ AppLaunchResult CPage3::LaunchAndProxyApp(
 	CloseHandle(pi.hThread);
 	return APP_LAUNCH_SUCCESS;
 }
+
+AppLaunchResult CPage3::LaunchPackagedAppAndProxy(
+	LPCTSTR fileName,
+	const CString& manifestDir,
+	const std::vector<CString>& extraArguments)
+{
+	TCHAR szModulePath[MAX_PATH] = { 0 };
+	if (GetModuleFileName(NULL, szModulePath, _countof(szModulePath)))
+	{
+		szModulePath[_countof(szModulePath) - 1] = _T('\0');
+		TCHAR szAppDir[MAX_PATH] = { 0 };
+		GetAppFolderPath(szModulePath, szAppDir);
+		PackagedAppSupport::EnsureAppContainerAccess(szAppDir);
+	}
+
+	CString aumid, packageFullName;
+	if (!PackagedAppSupport::ResolvePackagedAppAumid(fileName, manifestDir, aumid, packageFullName))
+	{
+		return APP_LAUNCH_INVALID_TARGET;
+	}
+
+	CString arguments;
+	for (size_t i = 0; i < extraArguments.size(); ++i)
+	{
+		if (!arguments.IsEmpty())
+			arguments += _T(" ");
+		arguments += QuoteCommandLineArgument(extraArguments[i]);
+	}
+
+	char szPipeName[MAX_PATH] = "\0";
+	IProxyReceptionCentre *pPRC = NULL;
+	if (!g_GlobalProxy || !(pPRC = g_GlobalProxy->GetPRCInstance()) || !pPRC->GetPRCPipeName(szPipeName, MAX_PATH))
+	{
+		return APP_LAUNCH_CREATE_PROCESS_FAILED;
+	}
+
+	// 预先解析并静态缓存 ntdll 进程挂起与恢复函数，避免进程创建后耗费时间查找
+	typedef LONG (NTAPI *pfnNtSuspendProcess)(HANDLE ProcessHandle);
+	typedef LONG (NTAPI *pfnNtResumeProcess)(HANDLE ProcessHandle);
+	static pfnNtSuspendProcess s_pfnNtSuspendProcess = NULL;
+	static pfnNtResumeProcess s_pfnNtResumeProcess = NULL;
+	static BOOL s_ntApisResolved = FALSE;
+
+	if (!s_ntApisResolved)
+	{
+		HMODULE hNtdll = GetModuleHandle(_T("ntdll.dll"));
+		if (hNtdll)
+		{
+			s_pfnNtSuspendProcess = reinterpret_cast<pfnNtSuspendProcess>(
+				GetProcAddress(hNtdll, "NtSuspendProcess"));
+			s_pfnNtResumeProcess = reinterpret_cast<pfnNtResumeProcess>(
+				GetProcAddress(hNtdll, "NtResumeProcess"));
+		}
+		s_ntApisResolved = TRUE;
+	}
+
+	DWORD processId = 0;
+	HRESULT hr = PackagedAppSupport::ActivatePackagedApp(
+		aumid,
+		arguments.IsEmpty() ? NULL : static_cast<LPCTSTR>(arguments),
+		&processId);
+
+	if (FAILED(hr) || processId == 0)
+	{
+		return APP_LAUNCH_CREATE_PROCESS_FAILED;
+	}
+
+	// 尝试物理冻结挂起目标进程（免开发者模式），最大化前置可靠性
+	HANDLE hTargetProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
+	BOOL processSuspended = FALSE;
+	if (hTargetProc && s_pfnNtSuspendProcess)
+	{
+		if (s_pfnNtSuspendProcess(hTargetProc) >= 0)
+		{
+			processSuspended = TRUE;
+		}
+	}
+
+	// 消除先发延迟：第 0 毫秒立即发起 HookProcess，仅在失败时密集快速重试（前 3 次仅等待 5ms）
+	BOOL injected = FALSE;
+	const int maxAttempts = 15;
+	for (int attempt = 0; attempt < maxAttempts; ++attempt)
+	{
+		if (HookProcess(processId, szPipeName))
+		{
+			injected = TRUE;
+			break;
+		}
+
+		Sleep(attempt < 3 ? 5 : 15);
+	}
+
+	if (hTargetProc)
+	{
+		if (processSuspended && s_pfnNtResumeProcess)
+		{
+			s_pfnNtResumeProcess(hTargetProc);
+		}
+		CloseHandle(hTargetProc);
+	}
+
+	if (!injected)
+	{
+		return APP_LAUNCH_INJECTION_FAILED;
+	}
+
+	UpdatePslist(FALSE);
+	return APP_LAUNCH_SUCCESS;
+}
+

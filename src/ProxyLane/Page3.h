@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "afxwin.h"
 #include "afxmt.h"
 #include "..\ProxyLaneHook\ProxyModule.h"
@@ -174,6 +174,10 @@ public:
 		const std::vector<CString>& extraArguments,
 		BOOL strictInjection,
 		AppLaunchElevationMode elevationMode = APP_LAUNCH_ELEVATION_AUTO);
+	AppLaunchResult LaunchPackagedAppAndProxy(
+		LPCTSTR fileName,
+		const CString& manifestDir,
+		const std::vector<CString>& extraArguments);
 	BOOL InjectNewProcess(LPHookNewProcessInfo lphnpi);
 	BOOL ShouldProxyChildProcess(LPHookNewProcessInfo lphnpi);
 

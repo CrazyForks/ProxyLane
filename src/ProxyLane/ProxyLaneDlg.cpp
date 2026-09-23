@@ -1,4 +1,4 @@
-﻿// ProxyLaneDlg.cpp : 实现文件
+// ProxyLaneDlg.cpp : 实现文件
 //
 
 #include "stdafx.h"
@@ -6,6 +6,7 @@
 #include "ProxyLaneDlg.h"
 #include "AppVersion.h"
 #include "Localization.h"
+#include "PackagedAppSupport.h"
 #include <afxole.h>
 
 #ifdef _DEBUG
@@ -543,6 +544,19 @@ BOOL CProxyLaneDlg::OnInitDialog()
 	SetIcon(m_hIcon, TRUE);			// 设置大图标
 	SetIcon(m_hIcon, FALSE);		// 设置小图标
 	m_hInactiveIcon = CreateGrayscaleIcon(GetIcon(FALSE));
+
+	// 启动时确保当前程序目录具备 ALL APPLICATION PACKAGES 读与执行权限，适配 UWP/AppContainer 进程注入
+	TCHAR szStartupModulePath[MAX_PATH] = { 0 };
+	if (GetModuleFileName(NULL, szStartupModulePath, _countof(szStartupModulePath)))
+	{
+		szStartupModulePath[_countof(szStartupModulePath) - 1] = _T('\0');
+		TCHAR* pLastSlash = _tcsrchr(szStartupModulePath, _T('\\'));
+		if (pLastSlash)
+		{
+			*pLastSlash = _T('\0');
+			PackagedAppSupport::EnsureAppContainerAccess(szStartupModulePath);
+		}
+	}
 
 	// TODO: 在此添加额外的初始化代码
 
